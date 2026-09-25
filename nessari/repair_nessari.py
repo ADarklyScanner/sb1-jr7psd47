@@ -14,6 +14,12 @@ What it does:
 Usage (in Termux):
   python repair_nessari.py            # repair
   python repair_nessari.py --dry-run  # report only, change nothing
+
+Optional in-depth add-on (her existing personality is kept as-is; the add-on
+is appended after it, and re-running replaces the old add-on instead of
+stacking copies):
+  python repair_nessari.py --add nessari_depth.txt   # add / update it
+  python repair_nessari.py --remove-add              # take it back off
 """
 import json
 import re
@@ -88,7 +94,23 @@ def encode_js(text):
     return s.replace("</", "<\\/").replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
 
 
-def repair(html):
+DEPTH_MARKER = "== Extra depth"
+
+
+def apply_depth(persona, depth):
+    """Drop any earlier add-on, then append `depth` (None = leave it off)."""
+    i = persona.find(DEPTH_MARKER)
+    if i != -1:
+        persona = persona[:i].rstrip()
+    if depth:
+        depth = normalize(depth)
+        if not depth.startswith(DEPTH_MARKER):
+            depth = DEPTH_MARKER + " ==\n" + depth
+        persona = persona + "\n\n" + depth
+    return persona
+
+
+def repair(html, depth=None, strip_depth=False):
     starts = list(PRESET_START.finditer(html))
     if not starts:
         raise ValueError("no Nessari preset found")
@@ -104,6 +126,8 @@ def repair(html):
     persona = normalize(extract_persona(raw))
     if len(persona) < 50:
         raise ValueError("extracted personality is suspiciously short")
+    if depth or strip_depth:
+        persona = apply_depth(persona, depth)
     trail = "," if nxt else ""
     fixed = html[:m.start()] + "{ name: 'Nessari', text: " + encode_js(persona) + " }" + trail
     return fixed + rest[end_match.start():], persona
@@ -142,7 +166,18 @@ def structure_ok(html):
 
 
 def main():
-    dry = "--dry-run" in sys.argv
+    args = sys.argv[1:]
+    dry = "--dry-run" in args
+    strip_depth = "--remove-add" in args
+    depth = None
+    if "--add" in args:
+        i = args.index("--add")
+        if i + 1 >= len(args):
+            sys.exit("ERROR: --add needs a file, e.g. --add nessari_depth.txt")
+        f = Path(args[i + 1]).expanduser()
+        if not f.exists():
+            sys.exit(f"ERROR: {f} not found")
+        depth = f.read_text(encoding="utf-8")
     if not TARGET.exists():
         sys.exit(f"ERROR: {TARGET} does not exist")
 
@@ -163,7 +198,7 @@ def main():
         html = p.read_text(encoding="utf-8", errors="replace")
         print(f"== {name} ({len(html)} bytes)")
         try:
-            fixed, persona = repair(html)
+            fixed, persona = repair(html, depth, strip_depth)
         except ValueError as e:
             print(f"   cannot repair: {e}\n")
             continue
@@ -186,6 +221,11 @@ def main():
         return
     TARGET.write_text(fixed, encoding="utf-8")
     print(f"Wrote repaired {name} -> {TARGET}")
+    if depth:
+        print("Added the in-depth section. It's long, so start the server with a "
+              "bigger context: -c 16384 --parallel 1")
+    elif strip_depth:
+        print("Removed the in-depth section (if it was there).")
     if j_ok is None:
         print("Tip: `pkg install nodejs` lets this script fully verify the JavaScript.")
     print("\nNext: run `chat`, open http://127.0.0.1:8080, then "
